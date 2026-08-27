@@ -8,6 +8,7 @@
 //  aggregates the per-window results into one file-level answer.
 //
 
+import AVFAudio
 import CoreML
 import Foundation
 import SoundAnalysis
@@ -65,21 +66,62 @@ public final class AudioClassifier: @unchecked Sendable {
         public let windows: Int
     }
 
+    /// Audio shorter than this is zero-padded before analysis, because a
+    /// file shorter than the model's window produces no windows at all —
+    /// and one-shots are shorter than the window by nature.
+    private static let minimumSeconds = 1.1
+
     /// Classifies an audio file, averaging all analysis windows.
     ///
-    /// - Parameter url: A local audio file.
+    /// - Parameter url: A local audio file. One-shots shorter than the
+    ///   model's analysis window are zero-padded rather than skipped.
     /// - Returns: The aggregated verdict.
     public func classify(url: URL) async throws -> Verdict {
         let request = try SNClassifySoundRequest(mlModel: model)
-        let analyzer = try SNAudioFileAnalyzer(url: url)
         let observer = Collector()
-        try analyzer.add(request, withObserver: observer)
 
+        let file = try AVAudioFile(forReading: url)
+        let seconds = Double(file.length) / file.processingFormat.sampleRate
+        if seconds < Self.minimumSeconds {
+            return try classifyPadded(file: file, request: request, observer: observer)
+        }
+
+        let analyzer = try SNAudioFileAnalyzer(url: url)
+        try analyzer.add(request, withObserver: observer)
         return try await withCheckedThrowingContinuation { continuation in
             analyzer.analyze { _ in
                 continuation.resume(with: observer.verdict())
             }
         }
+    }
+
+    /// Streams a short file into the analyzer with a zero tail.
+    private func classifyPadded(
+        file: AVAudioFile,
+        request: SNClassifySoundRequest,
+        observer: Collector
+    ) throws -> Verdict {
+        let format = file.processingFormat
+        let padded = AVAudioFrameCount(format.sampleRate * Self.minimumSeconds)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: padded) else {
+            throw MusicAnalysisError.analysisFailed("could not allocate analysis buffer")
+        }
+        try file.read(into: buffer)
+        // Zero the tail explicitly — freshly allocated buffers make no
+        // silence guarantee — then claim the padded length.
+        if let channels = buffer.floatChannelData {
+            for channel in 0..<Int(format.channelCount) {
+                let tail = channels[channel].advanced(by: Int(buffer.frameLength))
+                tail.update(repeating: 0, count: Int(padded - buffer.frameLength))
+            }
+        }
+        buffer.frameLength = padded
+
+        let analyzer = SNAudioStreamAnalyzer(format: format)
+        try analyzer.add(request, withObserver: observer)
+        analyzer.analyze(buffer, atAudioFramePosition: 0)
+        analyzer.completeAnalysis()
+        return try observer.verdict().get()
     }
 
     /// Accumulates per-window classifications.
