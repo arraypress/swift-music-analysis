@@ -81,6 +81,24 @@ Values already in range are untouched; a detection no ratio can bring inside is 
 let json = try JSONEncoder().encode(analysis)   // cannot fail on silence
 ```
 
+### Name the sample
+
+```swift
+let classifier = try await SampleClassifier(directory: modelsFolder)
+let verdict = try await classifier.classify(url: sampleURL)
+verdict.label          // "kick"
+verdict.ranking[0..<3] // the three likeliest, best first
+verdict.tonal          // 0.02 — whether a key means anything here (v2 models)
+```
+
+`SampleClassifier` runs CLAP ([laion/clap-htsat-unfused](https://huggingface.co/laion/clap-htsat-unfused))
+on Core AI with trained heads, from a folder holding
+[arraypress/muse-sample-types](https://huggingface.co/arraypress/muse-sample-types). v2 is
+one asset with both heads inside — 22 sample types and the tonal gate — measured on sample
+packs it never saw: **85.4% right first time, 97.5% in the top three; the gate 98.6%**. The
+mel front end matches CLAP's Python preprocessing; a v1 folder (the encoder plus separate head
+files) still loads.
+
 ## What to trust, measured
 
 Validated against a commercial sample pack with BPM and key in the filenames:

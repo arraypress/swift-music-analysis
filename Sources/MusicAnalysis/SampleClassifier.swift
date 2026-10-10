@@ -18,21 +18,40 @@ import Foundation
 /// using a CLAP audio encoder converted to a Core AI `.aimodel` plus a small
 /// trained classification head.
 ///
-/// The model directory must contain:
-/// - `clap-audio.aimodel` — the converted CLAP encoder (mel in, 512-d out)
+/// Two layouts of the model directory are read. Version 2, preferred when present:
+/// - `muse-sample-types.aimodel` — CLAP with both heads inside, entry point
+///   `classify`: mel in; `types`, `gate` (atonal, tonal) and `embedding` out
+/// - `types.txt`, `gate.txt` — the labels of the two outputs
 /// - `mel-filters.f32` — the 513×64 slaney mel filterbank, row-major floats
-/// - `head-w1.f32`, `head-b1.f32`, `head-w2.f32`, `head-b2.f32` — the head
-/// - `head-labels.txt` — one label per line, matching the head's outputs
+///
+/// Version 1: `clap-audio.aimodel` (entry point `embed`), `mel-filters.f32`,
+/// `head-w1.f32`, `head-b1.f32`, `head-w2.f32`, `head-b2.f32` and
+/// `head-labels.txt` — the head run here with vDSP, and no tonal answer.
 ///
 /// Preprocessing matches `ClapFeatureExtractor` exactly: 48 kHz mono,
 /// repeat-padded to 10 s (audio longer than 10 s uses the leading window),
 /// 1024-point hann STFT at hop 480, slaney mel, dB with a 1e-10 floor.
 public final class SampleClassifier: @unchecked Sendable {
 
-    private let encode: InferenceFunction
+    /// The network: the encoder with the head run here (v1), or one asset
+    /// with both heads inside it (v2).
+    private enum Network {
+        case encoderAndHead(InferenceFunction, w1: [Float], b1: [Float], w2: [Float], b2: [Float])
+        case combined(InferenceFunction, gateLabels: [String])
+    }
+
+    private let network: Network
     private let filters: [Float]                       // [513][64]
-    private let w1: [Float], b1: [Float], w2: [Float], b2: [Float]
     private let labels: [String]
+
+    /// The combined (v2) asset's file name.
+    public static let combinedAssetName = "muse-sample-types.aimodel"
+
+    /// Whether this classifier also answers tonal / atonal (v2).
+    public var hasGate: Bool {
+        if case .combined = network { return true }
+        return false
+    }
 
     /// One file's classification.
     public struct Verdict: Sendable {
@@ -42,9 +61,12 @@ public final class SampleClassifier: @unchecked Sendable {
         public let confidence: Double
         /// All labels with their probabilities, best first.
         public let ranking: [(label: String, probability: Double)]
+        /// The probability that a key signature means something here — the
+        /// tonal gate's answer, v2 only.
+        public let tonal: Double?
     }
 
-    /// Loads the encoder and head from a model directory.
+    /// Loads the classifier from a model directory, v2 when it is there.
     public init(directory: URL) async throws {
         func floats(_ name: String) throws -> [Float] {
             let url = directory.appendingPathComponent(name)
@@ -54,28 +76,30 @@ public final class SampleClassifier: @unchecked Sendable {
             let data = try Data(contentsOf: url)
             return data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
         }
+        func lines(_ name: String) throws -> [String] {
+            try String(contentsOf: directory.appendingPathComponent(name), encoding: .utf8)
+                .split(separator: "\n").map(String.init)
+        }
+        func function(_ asset: String, _ name: String) async throws -> InferenceFunction {
+            let url = directory.appendingPathComponent(asset)
+            guard FileManager.default.fileExists(atPath: url.path) else { throw MusicAnalysisError.fileNotFound(url.path) }
+            guard let function = try await AIModel(contentsOf: url).loadFunction(named: name) else {
+                throw MusicAnalysisError.analysisFailed("\(asset) has no '\(name)' function")
+            }
+            return function
+        }
         filters = try floats("mel-filters.f32")
-        w1 = try floats("head-w1.f32")
-        b1 = try floats("head-b1.f32")
-        w2 = try floats("head-w2.f32")
-        b2 = try floats("head-b2.f32")
-        labels = try String(
-            contentsOf: directory.appendingPathComponent("head-labels.txt"),
-            encoding: .utf8
-        ).split(separator: "\n").map(String.init)
-        guard b2.count == labels.count else {
-            throw MusicAnalysisError.analysisFailed("head has \(b2.count) outputs but \(labels.count) labels")
+        if FileManager.default.fileExists(atPath: directory.appendingPathComponent(Self.combinedAssetName).path) {
+            labels = try lines("types.txt")
+            network = .combined(try await function(Self.combinedAssetName, "classify"), gateLabels: try lines("gate.txt"))
+        } else {
+            let (w1, b1, w2, b2) = (try floats("head-w1.f32"), try floats("head-b1.f32"), try floats("head-w2.f32"), try floats("head-b2.f32"))
+            labels = try lines("head-labels.txt")
+            guard b2.count == labels.count else {
+                throw MusicAnalysisError.analysisFailed("head has \(b2.count) outputs but \(labels.count) labels")
+            }
+            network = .encoderAndHead(try await function("clap-audio.aimodel", "embed"), w1: w1, b1: b1, w2: w2, b2: b2)
         }
-
-        let modelURL = directory.appendingPathComponent("clap-audio.aimodel")
-        guard FileManager.default.fileExists(atPath: modelURL.path) else {
-            throw MusicAnalysisError.fileNotFound(modelURL.path)
-        }
-        let model = try await AIModel(contentsOf: modelURL)
-        guard let function = try model.loadFunction(named: "embed") else {
-            throw MusicAnalysisError.analysisFailed("model has no 'embed' function")
-        }
-        encode = function
     }
 
     // MARK: - Classification
@@ -83,39 +107,52 @@ public final class SampleClassifier: @unchecked Sendable {
     /// Classifies one audio file.
     public func classify(url: URL) async throws -> Verdict {
         let mel = try Self.melSpectrogram(of: try Self.load48kMono(url), filters: filters)
-        var outputs = try await encode.run(inputs: [
-            "input_features": NDArray(scalars: mel, shape: [1, 1, Self.frames, Self.mels])
-        ])
-        guard let value = outputs.remove("embedding"), let array = value.ndArray else {
-            throw MusicAnalysisError.analysisFailed("model produced no embedding")
+        let input = ["input_features": NDArray(scalars: mel, shape: [1, 1, Self.frames, Self.mels])]
+        switch network {
+        case .encoderAndHead(let encode, let w1, let b1, let w2, let b2):
+            var outputs = try await encode.run(inputs: input)
+            let embedding = try Self.vector(&outputs, "embedding", count: 512)
+            return verdict(probabilities: Self.head(embedding, w1: w1, b1: b1, w2: w2, b2: b2, outputs: labels.count), tonal: nil)
+        case .combined(let classify, let gateLabels):
+            var outputs = try await classify.run(inputs: input)
+            let types = try Self.vector(&outputs, "types", count: labels.count).map(Double.init)
+            let gate = try Self.vector(&outputs, "gate", count: gateLabels.count)
+            let tonal = gateLabels.firstIndex(of: "tonal").map { Double(gate[$0]) }
+            return verdict(probabilities: types, tonal: tonal)
         }
-        var embedding = [Float](repeating: 0, count: 512)
-        let view = array.view(as: Float.self)
-        for i in 0..<512 { embedding[i] = view[scalarAt: [0, i]] }
-        return verdict(for: embedding)
     }
 
-    private func verdict(for embedding: [Float]) -> Verdict {
+    /// The first `count` floats of a `[1, count]` output.
+    private static func vector(_ outputs: inout InferenceFunction.Outputs, _ name: String, count: Int) throws -> [Float] {
+        guard let array = outputs.remove(name)?.ndArray else { throw MusicAnalysisError.analysisFailed("model produced no \(name)") }
+        let view = array.view(as: Float.self)
+        return (0..<count).map { view[scalarAt: [0, $0]] }
+    }
+
+    private func verdict(probabilities: [Double], tonal: Double?) -> Verdict {
+        let ranking = zip(labels, probabilities).map { (label: $0.0, probability: $0.1) }
+            .sorted { $0.probability > $1.probability }
+        return Verdict(label: ranking[0].label, confidence: ranking[0].probability, ranking: ranking, tonal: tonal)
+    }
+
+    /// The v1 head on a raw embedding: L2-normalise, 512 → 512 GELU → labels, softmax.
+    private static func head(_ embedding: [Float], w1: [Float], b1: [Float], w2: [Float], b2: [Float], outputs: Int) -> [Double] {
         let norm = sqrt(embedding.reduce(Float(0)) { $0 + $1 * $1 })
         let x = embedding.map { $0 / max(norm, .leastNormalMagnitude) }
-
-        var hidden = [Float](repeating: 0, count: 512)
-        vDSP_mmul(w1, 1, x, 1, &hidden, 1, 512, 1, 512)
-        for i in 0..<512 {
+        let width = b1.count
+        var hidden = [Float](repeating: 0, count: width)
+        vDSP_mmul(w1, 1, x, 1, &hidden, 1, vDSP_Length(width), 1, 512)
+        for i in 0..<width {
             let v = hidden[i] + b1[i]
             hidden[i] = 0.5 * v * (1 + erf(v / sqrt(Float(2))))    // torch's exact GELU
         }
-        var logits = [Float](repeating: 0, count: labels.count)
-        vDSP_mmul(w2, 1, hidden, 1, &logits, 1, vDSP_Length(labels.count), 1, 512)
-        for i in 0..<labels.count { logits[i] += b2[i] }
-
+        var logits = [Float](repeating: 0, count: outputs)
+        vDSP_mmul(w2, 1, hidden, 1, &logits, 1, vDSP_Length(outputs), 1, vDSP_Length(width))
+        for i in 0..<outputs { logits[i] += b2[i] }
         let peak = logits.max() ?? 0
         let exps = logits.map { exp(Double($0 - peak)) }
         let total = exps.reduce(0, +)
-        let ranking = zip(labels, exps.map { $0 / total })
-            .map { (label: $0.0, probability: $0.1) }
-            .sorted { $0.probability > $1.probability }
-        return Verdict(label: ranking[0].label, confidence: ranking[0].probability, ranking: ranking)
+        return exps.map { $0 / total }
     }
 
     // MARK: - Audio loading
