@@ -34,6 +34,7 @@ public enum Analysis: String, Codable, Sendable, CaseIterable {
     case loudness
 
     /// The framework's equivalent of this case.
+    @available(macOS 27, iOS 27, tvOS 27, watchOS 27, visionOS 27, *)
     var frameworkType: AnalysisType {
         switch self {
         case .rhythm: return .rhythm

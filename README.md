@@ -18,9 +18,13 @@ A Swift library for on-device musical analysis of local audio files — BPM, key
 
 ## Requirements
 
-- macOS 27.0+ / iOS 27.0+ / tvOS 27.0+ / watchOS 27.0+ / visionOS 27.0+
-- Swift 6.0+
+- macOS 27.0+ / iOS 27.0+ / tvOS 27.0+ / watchOS 27.0+ / visionOS 27.0+ to run
+- Swift 6.2+
 - Xcode 27.0+
+
+The package itself declares 26 floors so an app or tool that links it still runs on 26: `MusicAnalysis` and
+`SampleClassifier` are `@available(macOS 27, …)` (the result types are plain values and are not), so check
+`#available(macOS 27, *)` before calling them (`vid analyze` skips the beat on 26 that way).
 
 ## Installation
 

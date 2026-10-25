@@ -39,6 +39,7 @@ import MusicUnderstanding
 /// by design (it needs two beats), and key output on percussive material is
 /// noise with no confidence value to filter it by. See ``AudioAnalysis`` for
 /// the per-field caveats.
+@available(macOS 27, iOS 27, tvOS 27, watchOS 27, visionOS 27, *)
 public enum MusicAnalysis {
 
     /// Analyzes an audio file at a path.

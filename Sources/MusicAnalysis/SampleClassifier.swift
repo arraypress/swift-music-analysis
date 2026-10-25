@@ -31,6 +31,7 @@ import Foundation
 /// Preprocessing matches `ClapFeatureExtractor` exactly: 48 kHz mono,
 /// repeat-padded to 10 s (audio longer than 10 s uses the leading window),
 /// 1024-point hann STFT at hop 480, slaney mel, dB with a 1e-10 floor.
+@available(macOS 27, iOS 27, tvOS 27, watchOS 27, visionOS 27, *)
 public final class SampleClassifier: @unchecked Sendable {
 
     /// The network: the encoder with the head run here (v1), or one asset

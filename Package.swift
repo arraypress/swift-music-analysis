@@ -1,18 +1,20 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
 
 let package = Package(
     name: "MusicAnalysis",
-    // MusicUnderstanding ships with the 27-era SDKs; there is no fallback
-    // implementation, so the floor is honest rather than aspirational.
+    // MusicUnderstanding and Core AI ship with the 27-era SDKs and there is
+    // no fallback, so everything that touches them is
+    // `@available(macOS 27, …)`. The 26 floors only let a tool that links
+    // this still run there (vid analyze skips beats on 26).
     platforms: [
-        .macOS("27.0"),
-        .iOS("27.0"),
-        .tvOS("27.0"),
-        .watchOS("27.0"),
-        .visionOS("27.0")
+        .macOS(.v26),
+        .iOS(.v26),
+        .tvOS(.v26),
+        .watchOS(.v26),
+        .visionOS(.v26)
     ],
     products: [
         .library(

@@ -19,6 +19,7 @@ struct ResultMapperTests {
     /// one, since the framework's types expose no memberwise initializers.
     /// Non-finite floats travel as strings, matching how the framework's own
     /// values fail to round-trip without the strategy.
+    @available(macOS 27, iOS 27, tvOS 27, watchOS 27, visionOS 27, *)
     private func decodeResult(_ json: String) throws -> MusicUnderstandingSession.SessionResult {
         let decoder = JSONDecoder()
         decoder.nonConformingFloatDecodingStrategy = .convertFromString(
@@ -44,7 +45,8 @@ struct ResultMapperTests {
 
     // MARK: Rhythm
 
-    @Test func rhythmConvertsToSeconds() throws {
+    @Test @available(macOS 27, iOS 27, tvOS 27, watchOS 27, visionOS 27, *)
+    func rhythmConvertsToSeconds() throws {
         let result = try decodeResult("""
         {"rhythm": {
             "beats": [\(time(0.5)), \(time(1.0))],
@@ -62,7 +64,8 @@ struct ResultMapperTests {
         #expect(mapped.duration == 16)
     }
 
-    @Test func missingBPMStaysNil() throws {
+    @Test @available(macOS 27, iOS 27, tvOS 27, watchOS 27, visionOS 27, *)
+    func missingBPMStaysNil() throws {
         let result = try decodeResult("""
         {"rhythm": {"beats": [\(time(0.1))], "bars": [], "beatsPerMinute": null}}
         """)
@@ -71,7 +74,8 @@ struct ResultMapperTests {
 
     // MARK: Key
 
-    @Test func keyUsesNoteNamesAndPrimaryKeyPicksLongest() throws {
+    @Test @available(macOS 27, iOS 27, tvOS 27, watchOS 27, visionOS 27, *)
+    func keyUsesNoteNamesAndPrimaryKeyPicksLongest() throws {
         let result = try decodeResult("""
         {"key": {"ranges": [
             {"range": \(range(0, 4)), "value": {"tonic": "fSharp", "mode": "minor"}},
@@ -88,7 +92,8 @@ struct ResultMapperTests {
 
     // MARK: Loudness
 
-    @Test func nonFiniteLoudnessIsDropped() throws {
+    @Test @available(macOS 27, iOS 27, tvOS 27, watchOS 27, visionOS 27, *)
+    func nonFiniteLoudnessIsDropped() throws {
         let result = try decodeResult("""
         {"loudness": {
             "integrated": {"time": \(time(0)), "value": "-inf"},
@@ -116,7 +121,8 @@ struct ResultMapperTests {
 
     // MARK: Instruments
 
-    @Test func instrumentsAggregateAndKeepStableOrder() throws {
+    @Test @available(macOS 27, iOS 27, tvOS 27, watchOS 27, visionOS 27, *)
+    func instrumentsAggregateAndKeepStableOrder() throws {
         let result = try decodeResult("""
         {"instrumentActivity": {
             "ranges": {"drum": [\(range(0, 8))]},
@@ -141,7 +147,8 @@ struct ResultMapperTests {
 
     // MARK: Note names
 
-    @Test func everyTonicHasANoteName() {
+    @Test @available(macOS 27, iOS 27, tvOS 27, watchOS 27, visionOS 27, *)
+    func everyTonicHasANoteName() {
         for tonic in [KeyResult.Tonic.aFlat, .aSharp, .a, .bFlat, .b, .c, .cSharp,
                       .d, .dFlat, .dSharp, .eFlat, .e, .f, .fSharp, .g, .gFlat, .gSharp] {
             let name = ResultMapper.noteName(for: tonic)

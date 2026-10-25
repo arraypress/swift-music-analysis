@@ -12,6 +12,7 @@ import CoreMedia
 import Foundation
 import MusicUnderstanding
 
+@available(macOS 27, iOS 27, tvOS 27, watchOS 27, visionOS 27, *)
 enum ResultMapper {
 
     /// Maps a session result into the public model.
